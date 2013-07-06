@@ -6,3 +6,6 @@ include /usr/share/openstack-pkg-tools/pkgos.make
 %:
 	dh $@  --with python2
 
+override_dh_clean:
+	dh_clean
+	rm -rf requestbuilder.egg-info
