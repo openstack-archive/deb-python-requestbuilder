@@ -1,0 +1,27 @@
+Source: python-requestbuilder
+Section: python
+Priority: optional
+Maintainer: PKG OpenStack <openstack-devel@lists.alioth.debian.org>
+Uploaders: Julien Danjou <acid@debian.org>,
+           Thomas Goirand <zigo@debian.org>,
+           Mehdi Abaakouk <sileht@sileht.net>
+Build-Depends: debhelper (>= 9),
+               openstack-pkg-tools,
+               python-all (>= 2.6.6-3~),
+               python-requests,
+               python-setuptools,
+               python-six
+Standards-Version: 3.9.4
+Vcs-Browser: http://anonscm.debian.org/gitweb/?p=openstack/python-requestbuilder.git
+Vcs-Git: git://anonscm.debian.org/openstack/python-requestbuilder.git
+Homepage: https://pypi.python.org/pypi/requestbuilder
+
+Package: python-requestbuilder
+Architecture: all
+Pre-Depends: dpkg (>= 1.15.6~)
+Depends: python-requests, python-six, ${misc:Depends}, ${python:Depends}
+Recommends: ${python:Recommends}
+Description: command line-driven HTTP request builder
+ Python Requestbuilder is command line-driven. It is used to build HTTP
+ requests, and is used by the euca2ools recent version (eg: newer than version
+ 3.0.0).
