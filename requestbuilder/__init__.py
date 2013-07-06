@@ -38,20 +38,6 @@ if '__file__' in globals():
         pass
 
 
-########## SINGLETONS ##########
-# Indicates a parameter that should be sent to the server without a value.
-# Contrast this with empty strings, with are omitted from requests entirely.
-EMPTY = type('EMPTY', (), {'__repr__': lambda self: "''",
-                           '__str__':  lambda self: ''})()
-
-# Getters used for arg routing
-AUTH    = operator.attrgetter('service.auth.args')
-PARAMS  = operator.attrgetter('params')
-SERVICE = operator.attrgetter('service.args')
-SESSION = operator.attrgetter('service.session_args')
-
-
-########## ARG CLASSES ##########
 class Arg(object):
     '''
     A command line argument.  Positional and keyword arguments to __init__
@@ -127,22 +113,19 @@ class Filter(object):
         ArgumentTypeError will result as well.
         '''
         if '=' not in argval:
-            msg = "filter '{0}' must have format 'NAME=VALUE'".format(argval)
+            msg = 'filter {0} must have format "NAME=VALUE"'.format(argval)
             raise argparse.ArgumentTypeError(msg)
         (name, value_str) = argval.split('=', 1)
         try:
             value = self.type(value_str)
         except ValueError:
-            msg = "{0} filter value '{1}' must have type {2}".format(
-                    name, value_str, self.type.__name__)
+            msg = 'filter {0} must have type {1}'.format(
+                    value_str, self.type.__name__)
             raise argparse.ArgumentTypeError(msg)
         if self.choices and value not in self.choices:
-            msg = "{0} filter value '{1}' must match one of {2}".format(
-                    name, value,
-                    ', '.join([str(choice) for choice in self.choices]))
+            msg = 'filter value {0} must match one of {1}'.format(
+                    value, ', '.join([str(choice) for choice in self.choices]))
             raise argparse.ArgumentTypeError(msg)
-        if value == '':
-            value = EMPTY
         return (name, value)
 
 
@@ -154,3 +137,14 @@ class GenericTagFilter(Filter):
         return argval.startswith('tag:') and '=' in argval
 
 
+########## SINGLETONS ##########
+# Indicates a parameter that should be sent to the server without a value.
+# Contrast this with empty strings, with are omitted from requests entirely.
+EMPTY = type('EMPTY', (), {'__repr__': lambda self: "''",
+                           '__str__':  lambda self: ''})()
+
+# Getters used for arg routing
+AUTH    = operator.attrgetter('service.auth.args')
+PARAMS  = operator.attrgetter('params')
+SERVICE = operator.attrgetter('service.args')
+SESSION = operator.attrgetter('service.session_args')
