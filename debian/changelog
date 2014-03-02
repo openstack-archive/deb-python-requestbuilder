@@ -1,3 +1,9 @@
+python-requestbuilder (0.1.0-1) unstable; urgency=medium
+
+  * New upstream release (Closes: #731951).
+
+ -- Thomas Goirand <zigo@debian.org>  Sun, 02 Mar 2014 17:39:18 +0800
+
 python-requestbuilder (0.1.0~beta2-1) unstable; urgency=low
 
   * Initial release. (Closes: #715136)
