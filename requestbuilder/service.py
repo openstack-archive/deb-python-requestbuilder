@@ -1,4 +1,4 @@
-# Copyright (c) 2012-2013, Eucalyptus Systems, Inc.
+# Copyright (c) 2012-2014, Eucalyptus Systems, Inc.
 #
 # Permission to use, copy, modify, and/or distribute this software for
 # any purpose with or without fee is hereby granted, provided that the
@@ -14,40 +14,39 @@
 
 from __future__ import absolute_import
 
-import copy
+import collections
 import datetime
 import functools
 import logging
 import os.path
 import random
-from requestbuilder import SERVICE
-from requestbuilder.exceptions import (ClientError, ServerError,
-    ServiceInitError)
-from requestbuilder.util import (add_default_routes, aggregate_subclass_fields,
-    set_userregion)
-import requests.exceptions
 import time
 import urlparse
-import weakref
+
+import requests.exceptions
+import six
+
+from requestbuilder.exceptions import (ClientError, ServerError,
+                                       ServiceInitError)
+from requestbuilder.mixins import RegionConfigurableMixin
+from requestbuilder.util import add_default_routes, aggregate_subclass_fields
 
 
-
-class BaseService(object):
+class BaseService(RegionConfigurableMixin):
     NAME = None
     DESCRIPTION = ''
     API_VERSION = ''
     MAX_RETRIES = 2
     TIMEOUT = 30  # socket timeout in seconds
+    AUTH_CLASS = None  # deprecated; use BaseRequest.AUTH_CLASS instead
 
-    AUTH_CLASS = None
     REGION_ENVVAR = None
     URL_ENVVAR = None
 
     ARGS = []
-    DEFAULT_ROUTES = (SERVICE,)
 
-    def __init__(self, config, auth=None, loglevel=None, max_retries=None,
-                 timeout=None, **kwargs):
+    def __init__(self, config, loglevel=None, max_retries=None, timeout=None,
+                 **kwargs):
         self.args      = kwargs
         self.config    = config
         self.endpoint  = None
@@ -55,48 +54,28 @@ class BaseService(object):
         if loglevel is not None:
             self.log.level = loglevel
         self.max_retries = max_retries
+        self.region_name = None  # Note this can differ from config.region
         self.session_args = {}
         self.timeout = timeout
         self._session = None
 
-        if auth is not None:
-            self.auth = auth
-            self.auth.service = weakref.proxy(self)
-        elif self.AUTH_CLASS is not None:
-            self.auth = self.AUTH_CLASS(self.config, loglevel=self.log.level)
-            self.auth.service = weakref.proxy(self)
-        else:
-            self.auth = None
-
-    @property
-    def region_name(self):
-        # FIXME:  this makes it impossible for services in different regions
-        # to share configuration.
-        return self.config.get_region()
-
-    def collect_arg_objs(self):
-        service_args = aggregate_subclass_fields(self.__class__, 'ARGS')
-        add_default_routes(service_args, self.DEFAULT_ROUTES)
-        if self.auth is not None:
-            auth_args = self.auth.collect_arg_objs()
-        else:
-            auth_args = []
-        return service_args + auth_args
-
-    def preprocess_arg_objs(self, arg_objs):
-        if self.auth is not None:
-            self.auth.preprocess_arg_objs(arg_objs)
+    @classmethod
+    def from_other(cls, other, **kwargs):
+        kwargs.setdefault('loglevel', other.log.level)
+        kwargs.setdefault('max_retries', other.max_retries)
+        kwargs.setdefault('session_args', dict(other.session_args))
+        kwargs.setdefault('timeout', other.timeout)
+        if 'region' in other.args:
+            kwargs.setdefault('region', other.args['region'])
+        new = cls(other.config, **kwargs)
+        new.configure()
+        return new
 
     def configure(self):
-        # self.args gets highest precedence for self.endpoint and user/region
-        self.process_url(self.args.get('url'))
-        set_userregion(self.config, self.args.get('userregion'))
-        # Environment comes next
-        set_userregion(self.config, os.getenv(self.REGION_ENVVAR))
-        self.process_url(os.getenv(self.URL_ENVVAR))
-        # Finally, try the config file
-        if self.NAME is not None:
-            self.process_url(self.config.get_region_option(self.NAME + '-url'))
+        # Configure user and region before grabbing endpoint info since
+        # the latter may depend upon the former
+        self.update_config_view()
+        self.__configure_endpoint()
 
         # Configure timeout and retry handlers
         if self.max_retries is None:
@@ -113,33 +92,28 @@ class BaseService(object):
                 self.timeout = self.TIMEOUT
 
         # SSL cert verification is opt-in
-        self.session_args['verify'] = self.config.get_region_option_bool(
-            'verify-ssl', default=False)
+        self.session_args['verify'] = self.config.convert_to_bool(
+            self.config.get_region_option('verify-ssl'), default=False)
+
+        # requests only applies proxy config in code paths we don't use
+        self.session_args['proxies'] = _get_proxies()
 
         # Ensure everything is okay and finish up
         self.validate_config()
-        if self.auth is not None:
-            self.auth.configure()
 
     @property
     def session(self):
         if self._session is None:
-            if requests.__version__ >= '1.0':
-                self._session = requests.session()
-                for key, val in self.session_args.iteritems():
-                    setattr(self._session, key, val)
-            else:
-                self._session = requests.session(**self.session_args)
+            self._session = requests.session()
+            for key, val in self.session_args.iteritems():
+                setattr(self._session, key, val)
         return self._session
 
     def validate_config(self):
         if self.endpoint is None:
             if self.NAME is not None:
                 url_opt = '{0}-url'.format(self.NAME)
-                available_regions = []
-                for rname, rconfig in self.config.regions.iteritems():
-                    if url_opt in rconfig and '*' not in rname:
-                        available_regions.append(rname)
+                available_regions = self.config.get_all_region_options(url_opt)
                 if len(available_regions) > 0:
                     msg = ('No {0} endpoint to connect to was given. '
                            'Configured regions with {0} endpoints are: '
@@ -153,20 +127,9 @@ class BaseService(object):
                 msg = 'No endpoint to connect to was given'
             raise ServiceInitError(msg)
 
-    def process_url(self, url):
-        if url:
-            if '::' in url:
-                userregion, endpoint = url.split('::', 1)
-            else:
-                endpoint = url
-                userregion = None
-            if self.endpoint is None:
-                self.endpoint = endpoint
-            set_userregion(self.config, userregion)
-
     def send_request(self, method='GET', path=None, params=None, headers=None,
-                     data=None):
-        ## TODO:  test url-encoding
+                     data=None, files=None, auth=None):
+        # TODO:  test url-encoding
         if path:
             # We can't simply use urljoin because a path might start with '/'
             # like it could for S3 keys that start with that character.
@@ -178,7 +141,7 @@ class BaseService(object):
             url = self.endpoint
 
         headers = dict(headers)
-        if 'host' not in map(str.lower, headers.iterkeys()):
+        if 'host' not in [header.lower() for header in headers]:
             headers['Host'] = urlparse.urlparse(self.endpoint).netloc
 
         try:
@@ -200,13 +163,13 @@ class BaseService(object):
 
                     self.log.info('sending request (attempt %i of %i)',
                                   attempt_no, max_tries)
-                    response = self.__log_and_send_request(method, url, params,
-                                                           data, headers)
+                    response = self.__log_and_send_request(
+                        method, url, params, data, files, headers, auth)
                     if response.status_code not in (500, 503):
                         break
                     # If it *was* in that list, retry
                 if (response.status_code in (301, 302, 307, 308) and
-                    redirects_left > 0 and 'Location' in response.headers):
+                        redirects_left > 0 and 'Location' in response.headers):
                     # Standard redirect -- we need to handle this ourselves
                     # because we have to re-sign requests when their URLs
                     # change.
@@ -249,7 +212,8 @@ class BaseService(object):
         self.log.debug('HTTP error', exc_info=True)
         raise ServerError(response)
 
-    def __log_and_send_request(self, method, url, params, data, headers):
+    def __log_and_send_request(self, method, url, params, data, files, headers,
+                               auth):
         # Requests 1 gives auth handlers PreparedRequests instead of the
         # original Requests like version 0 does.  Since most of our auth
         # handlers inspect and/or modify things that aren't headers, we
@@ -257,82 +221,71 @@ class BaseService(object):
         #
         # The pre_send hook only works on requests 0.  We replicate that for
         # requests 1 just below.
-        hooks = {'pre_send': functools.partial(_log_request_data,  self.log),
-                 'response': functools.partial(_log_response_data, self.log)}
-        if requests.__version__ >= '1.0':
-            request = requests.Request(method=method, url=url,
-                                       params=params, data=data,
-                                       headers=headers)
-            if self.auth is not None:
-                self.auth(request)
-            # A prepared request gives us extra info we want to log
-            p_request = request.prepare()
-            p_request.hooks = {'response': hooks['response']}
-            self.log.debug('request method: %s', request.method)
-            self.log.debug('request url:    %s', p_request.url)
-            if isinstance(p_request.headers, dict):
-                for key, val in sorted(p_request.headers.iteritems()):
-                    if key.lower().endswith('password'):
-                        val = '<redacted>'
-                    self.log.debug('request header: %s: %s', key, val)
-            if isinstance(request.params, dict):
-                for key, val in sorted(request.params.iteritems()):
-                    if key.lower().endswith('password'):
-                        val = '<redacted>'
-                    self.log.debug('request param:  %s: %s', key, val)
-            if isinstance(request.data, dict):
-                for key, val in sorted(request.data.iteritems()):
-                    if key.lower().endswith('password'):
-                        val = '<redacted>'
-                    self.log.debug('request data:   %s: %s', key, val)
-            p_request.start_time = datetime.datetime.now()
-            return self.session.send(p_request, stream=True,
-                                     timeout=self.timeout)
-        else:
-            request = requests.Request(method=method, url=url, params=params,
-                                       data=data, headers=headers,
-                                       timeout=self.timeout)
-            if self.auth is not None:
-                self.auth(request)
-            request.session = self.session
-            # A hook lets us log all the info that requests adds right
-            # before sending
-            request.hooks = hooks
-            request.start_time = datetime.datetime.now()
-            request.send()
-            return request.response
+        hooks = {'response': functools.partial(_log_response_data, self.log)}
+        request = requests.Request(method=method, url=url, params=params,
+                                   data=data, files=files, headers=headers)
+        if auth is not None:
+            auth.apply_to_request(request, self)
+        # A prepared request gives us extra info we want to log
+        p_request = request.prepare()
+        p_request.hooks = {'response': hooks['response']}
+        self.log.debug('request method: %s', request.method)
+        self.log.debug('request url:    %s', p_request.url)
+        if isinstance(p_request.headers, (dict, collections.Mapping)):
+            for key, val in sorted(p_request.headers.iteritems()):
+                if key.lower().endswith('password'):
+                    val = '<redacted>'
+                self.log.debug('request header: %s: %s', key, val)
+        if isinstance(request.params, (dict, collections.Mapping)):
+            for key, val in sorted(request.params.iteritems()):
+                if key.lower().endswith('password'):
+                    val = '<redacted>'
+                self.log.debug('request param:  %s: %s', key, val)
+        if isinstance(request.data, (dict, collections.Mapping)):
+            for key, val in sorted(request.data.iteritems()):
+                if key.lower().endswith('password'):
+                    val = '<redacted>'
+                self.log.debug('request data:   %s: %s', key, val)
+        if isinstance(request.files, (dict, collections.Mapping)):
+            for key, val in sorted(request.files.iteritems()):
+                if hasattr(val, '__len__'):
+                    val = '<{0} bytes>'.format(len(val))
+                self.log.debug('request file:   %s: %s', key, val)
+        p_request.start_time = datetime.datetime.now()
+        return self.session.send(p_request, stream=True, timeout=self.timeout)
+
+    def __configure_endpoint(self):
+        # self.args gets highest precedence
+        if self.args.get('url'):
+            url, region_name = _parse_endpoint_url(self.args['url'])
+        # Environment comes next
+        elif os.getenv(self.URL_ENVVAR):
+            url, region_name = _parse_endpoint_url(os.getenv(self.URL_ENVVAR))
+        # Try the config file
+        elif self.NAME:
+            url, section = self.config.get_region_option2(self.NAME + '-url')
+            if section:
+                # Check to see if the region name is explicitly specified
+                region_name = self.config.get_region_option('name', section)
+                if region_name is None:
+                    # If it isn't then just grab the end of the section name
+                    region_name = section.rsplit(':', 1)[-1]
+            else:
+                region_name = None
+        self.endpoint = url
+        self.region_name = region_name
 
 
-# Note that the hook this is meant to run as was removed from requests 1.
-def _log_request_data(logger, request, **kwargs):
-    logger.debug('request method: %s', request.method)
-    logger.debug('request url:    %s', request.full_url)
-    if isinstance(request.headers, dict):
-        for key, val in sorted(request.headers.iteritems()):
-            if key.lower().endswith('password'):
-                val = '<redacted>'
-            logger.debug('request header: %s: %s', key, val)
-    if isinstance(request.params, dict):
-        for key, val in sorted(request.params.iteritems()):
-            if key.lower().endswith('password'):
-                val = '<redacted>'
-            logger.debug('request param:  %s: %s', key, val)
-    if isinstance(request.data, dict):
-        for key, val in sorted(request.data.iteritems()):
-            if key.lower().endswith('password'):
-                val = '<redacted>'
-            logger.debug('request data:   %s: %s', key, val)
-
-
-def _log_response_data(logger, response, **kwargs):
-    duration = datetime.datetime.now() - response.request.start_time
-    logger.debug('response time: %i.%03i seconds', duration.seconds,
-                 duration.microseconds // 1000)
+def _log_response_data(logger, response, **_):
+    if hasattr(response.request, 'start_time'):
+        duration = datetime.datetime.now() - response.request.start_time
+        logger.debug('response time: %i.%03i seconds', duration.seconds,
+                     duration.microseconds // 1000)
     if response.status_code >= 400:
         logger.error('response status: %i', response.status_code)
     else:
         logger.info('response status: %i', response.status_code)
-    if isinstance(response.headers, dict):
+    if isinstance(response.headers, (dict, collections.Mapping)):
         for key, val in sorted(response.headers.items()):
             logger.debug('response header: %s: %s', key, val)
 
@@ -343,3 +296,29 @@ def _generate_delays(max_tries):
         for retry_no in range(1, max_tries):
             next_delay = (random.random() + 1) * 2 ** (retry_no - 1)
             yield min((next_delay, 15))
+
+
+def _parse_endpoint_url(urlish):
+    """
+    If given a URL, return the URL and None.  If given a URL with a string and
+    "::" prepended to it, return the URL and the prepended string.  This is
+    meant to give one a means to supply a region name via arguments and
+    variables that normally only accept URLs.
+    """
+    if '::' in urlish:
+        region, url = urlish.split('::', 1)
+    else:
+        region = None
+        url = urlish
+    return url, region
+
+
+def _get_proxies():
+    try:
+        bypass = six.moves.urllib.request.proxy_bypass()
+    except (TypeError, socket.gaierror):
+        # This blows up on my old OS X machine
+        bypass = False
+    if bypass:
+        return {}
+    return six.moves.urllib.request.getproxies()

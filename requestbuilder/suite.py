@@ -1,4 +1,4 @@
-# Copyright (c) 2013, Eucalyptus Systems, Inc.
+# Copyright (c) 2013-2014, Eucalyptus Systems, Inc.
 #
 # Permission to use, copy, modify, and/or distribute this software for
 # any purpose with or without fee is hereby granted, provided that the
@@ -13,9 +13,11 @@
 # OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 import platform
-from requestbuilder import __version__
-import requests
 import sys
+
+import requests
+
+from requestbuilder import __version__
 
 
 class RequestBuilder(object):
@@ -28,7 +30,7 @@ class RequestBuilder(object):
 
     @staticmethod
     def format_version():
-        return 'requestbuilder {0} (Prelude)'.format(__version__)
+        return 'requestbuilder {0} (Intermezzo)'.format(__version__)
 
     @staticmethod
     def list_config_files():
@@ -63,12 +65,7 @@ class RequestBuilder(object):
                 tokens.append(' '.join(plat))
             tokens.append(platform.machine())
             user_agent.append('({0})'.format('; '.join(tokens)))
-
-            try:
-                # This should always work; I'm just being paranoid.
-                user_agent.append('requests/{0}'.format(requests.__version__))
-            except:
-                pass
+            user_agent.append('requests/{0}'.format(requests.__version__))
 
             self.__user_agent = ' '.join(user_agent)
         return self.__user_agent

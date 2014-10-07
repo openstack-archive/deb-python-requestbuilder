@@ -1,4 +1,4 @@
-# Copyright (c) 2012-2013, Eucalyptus Systems, Inc.
+# Copyright (c) 2012-2014, Eucalyptus Systems, Inc.
 #
 # Permission to use, copy, modify, and/or distribute this software for
 # any purpose with or without fee is hereby granted, provided that the
@@ -18,7 +18,7 @@ import os.path
 import subprocess
 
 
-__version__ = '0.1.0'
+__version__ = '0.2.2'
 
 if '__file__' in globals():
     # Check if this is a git repo; maybe we can get more precise version info
@@ -30,7 +30,7 @@ if '__file__' in globals():
         git.wait()
         git.stderr.read()
         if git.returncode == 0:
-            __version__ = git.stdout.read().strip()
+            __version__ = git.stdout.read().strip().lstrip('v')
             if type(__version__).__name__ == 'bytes':
                 __version__ = __version__.decode()
     except:
@@ -45,9 +45,7 @@ EMPTY = type('EMPTY', (), {'__repr__': lambda self: "''",
                            '__str__':  lambda self: ''})()
 
 # Getters used for arg routing
-AUTH    = operator.attrgetter('service.auth.args')
 PARAMS  = operator.attrgetter('params')
-SERVICE = operator.attrgetter('service.args')
 SESSION = operator.attrgetter('service.session_args')
 
 
@@ -82,20 +80,30 @@ class Arg(object):
 class MutuallyExclusiveArgList(list):
     '''
     Pass Args as positional arguments to __init__ to create a set of
-    command line arguments that are mutually exclusive.  If the first
-    argument passed to __init__ is True then the user must specify
-    exactly one of them.
+    command line arguments that are mutually exclusive.  If you also
+    call the required() method then the user must specify exactly one
+    of them.  The recommended way to do that is via chaining it from
+    __init__.
 
-    Example:  MutuallyExclusiveArgList(Arg('--one'), Arg('--two'))
+    Examples:
+
+        MutuallyExclusiveArgList(Arg('--spam'), Arg('--eggs'))
+
+        MutuallyExclusiveArgList(Arg('--spam'),
+                                 Arg('--eggs')).required()
     '''
 
     def __init__(self, *args):
         if len(args) > 0 and isinstance(args[0], bool):
-            self.required = args[0]
+            self.is_required = args[0]
             list.__init__(self, args[1:])
         else:
-            self.required = False
+            self.is_required = False
             list.__init__(self, args)
+
+    def required(self):
+        self.is_required = True
+        return self
 
 
 class Filter(object):
@@ -152,5 +160,3 @@ class GenericTagFilter(Filter):
     '''
     def matches_argval(self, argval):
         return argval.startswith('tag:') and '=' in argval
-
-

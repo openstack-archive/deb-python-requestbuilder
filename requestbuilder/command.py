@@ -1,4 +1,4 @@
-# Copyright (c) 2012-2013, Eucalyptus Systems, Inc.
+# Copyright (c) 2012-2014, Eucalyptus Systems, Inc.
 #
 # Permission to use, copy, modify, and/or distribute this software for
 # any purpose with or without fee is hereby granted, provided that the
@@ -18,21 +18,22 @@ import argparse
 import bdb
 import logging
 import os.path
+import signal
 import sys
 import textwrap
 import traceback
-
 try:
     import epdb
 except ImportError:
     import pdb
 
-from . import Arg, MutuallyExclusiveArgList
-from .config import Config
-from .exceptions import ArgumentError
-from .logging import configure_root_logger
-from .suite import RequestBuilder
-from .util import add_default_routes, aggregate_subclass_fields
+from requestbuilder import Arg, MutuallyExclusiveArgList
+from requestbuilder.config import ConfigData, ConfigView
+from requestbuilder.exceptions import ArgumentError
+from requestbuilder.logging import configure_root_logger
+from requestbuilder.suite import RequestBuilder
+from requestbuilder.util import add_default_routes, aggregate_subclass_fields
+
 
 class BaseCommand(object):
     '''
@@ -68,7 +69,7 @@ class BaseCommand(object):
     SUITE = RequestBuilder
     __CONFIGURED_FROM_CLI = False
 
-    def __init__(self, config=None, _do_cli=False, **kwargs):
+    def __init__(self, config=None, loglevel=None, _do_cli=False, **kwargs):
         self.args          = kwargs
         self.config        = config  # created by _process_configfiles if None
         self.log           = None  # created by _configure_logging
@@ -77,7 +78,7 @@ class BaseCommand(object):
         self._cli_parser   = None  # created by _build_parser
         self.__debug       = False
 
-        self._configure_logging()
+        self._configure_logging(loglevel)
         self._process_configfiles()
         if _do_cli:
             if BaseCommand.__CONFIGURED_FROM_CLI:
@@ -120,19 +121,30 @@ class BaseCommand(object):
             else:
                 raise
 
-    def _configure_logging(self):
+    @classmethod
+    def from_other(cls, other, **kwargs):
+        kwargs.setdefault('loglevel', other.log.level)
+        new = cls(config=other.config, **kwargs)
+        # That already calls configure
+        return new
+
+    def _configure_logging(self, loglevel):
         self.log = logging.getLogger(self.name)
-        if self.debug:
+        if loglevel is not None:
+            self.log.setLevel(loglevel)
+        elif self.debug:
             self.log.setLevel(logging.DEBUG)
 
     def _process_configfiles(self):
         if self.config is None:
             config_files = self.suite.list_config_files()
-            self.config = Config(config_files, loglevel=self.log.level)
+            config_data = ConfigData(config_files)
+            self.config = ConfigView(config_data)
         # Now that we have a config file we should check to see if it wants
         # us to turn on debugging
-        if self.__config_enables_debugging():
+        if self.debug:
             self.log.setLevel(logging.DEBUG)
+            self.config.log.setLevel(logging.DEBUG)
 
     def _configure_global_logging(self):
         if self.config.get_global_option('debug') in ('color', 'colour'):
@@ -147,7 +159,6 @@ class BaseCommand(object):
                 formatter_class=argparse.RawDescriptionHelpFormatter,
                 usage=self.USAGE, add_help=False)
         arg_objs = self.collect_arg_objs()
-        self.preprocess_arg_objs(arg_objs)
         self.populate_parser(parser, arg_objs)
         # Low-level basic args that affect the core of the framework
         # These don't actually show up once CLI args finish processing.
@@ -176,9 +187,6 @@ class BaseCommand(object):
         add_default_routes(arg_objs, self.DEFAULT_ROUTES)
         return arg_objs
 
-    def preprocess_arg_objs(self, arg_objs):
-        pass
-
     def populate_parser(self, parser, arg_objs):
         for arg_obj in arg_objs:
             self.__add_arg_to_cli_parser(arg_obj, parser)
@@ -199,7 +207,7 @@ class BaseCommand(object):
                 return [arg]
         elif isinstance(arglike_obj, MutuallyExclusiveArgList):
             exgroup = parser.add_mutually_exclusive_group(
-                    required=arglike_obj.required)
+                    required=arglike_obj.is_required)
             args = []
             for group_arg in arglike_obj:
                 args.extend(self.__add_arg_to_cli_parser(group_arg, exgroup))
@@ -220,6 +228,7 @@ class BaseCommand(object):
         if cli_args.pop('_debugger', False):
             self.__debug = True
             sys.excepthook = _debugger_except_hook
+            signal.signal(signal.SIGUSR1, _debugger_usr1_handler)
         # Everything goes in self.args.  distribute_args() also puts them
         # elsewhere later on in the process.
         self.args.update(cli_args)
@@ -345,9 +354,10 @@ class BaseCommand(object):
         if self.config is None:
             return False
         if self.config.get_global_option('debug') in ('color', 'colour'):
-            # It isn't boolean, but still counts as true.
             return True
-        return self.config.get_global_option_bool('debug', False)
+        if self.config.convert_to_bool(self.config.get_global_option('debug')):
+            return True
+        return False
 
 
 def _debugger_except_hook(type_, value, tracebk):
@@ -367,3 +377,14 @@ def _debugger_except_hook(type_, value, tracebk):
     else:
         traceback.print_tb(tracebk)
         sys.exit(1)
+
+
+def _debugger_usr1_handler(_, frame):
+    """
+    Show a traceback and local variables when sent SIGUSR1.  Note that
+    this could cause exceptions due to interrupted system calls.
+    """
+    frame_dict = {'_frame': frame}
+    frame_dict.update(frame.f_globals)
+    frame_dict.update(frame.f_locals)
+    print >> sys.stderr, ''.join(traceback.format_stack(frame))

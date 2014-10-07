@@ -1,4 +1,4 @@
-# Copyright (c) 2012-2013, Eucalyptus Systems, Inc.
+# Copyright (c) 2012-2014, Eucalyptus Systems, Inc.
 #
 # Permission to use, copy, modify, and/or distribute this software for
 # any purpose with or without fee is hereby granted, provided that the
@@ -14,21 +14,23 @@
 
 from __future__ import absolute_import
 
-import argparse
 import base64
+import calendar
+import datetime
 import email.utils
 import hashlib
 import hmac
 import os
 import logging
 import re
-from requestbuilder import Arg, AUTH
-from requestbuilder.exceptions import AuthError
-from requestbuilder.util import add_default_routes, aggregate_subclass_fields
 import six
 import time
 import urllib
 import urlparse
+
+from requestbuilder import Arg
+from requestbuilder.exceptions import AuthError
+
 
 ISO8601 = '%Y-%m-%dT%H:%M:%SZ'
 
@@ -41,36 +43,18 @@ class BaseAuth(object):
     necessary functions to effect an authentication scheme.
     '''
     ARGS = []
-    DEFAULT_ROUTES = (AUTH,)
 
     def __init__(self, config, loglevel=None, **kwargs):
-        self.args    = kwargs
-        self.config  = config
-        # Auth handlers are much more tightly coupled with their associated
-        # services.  Since some of them need to have access to stuff like
-        # endpoint URLs and region names the service will automatically give
-        # the auth handler a weak reference to itself when it creates the auth
-        # handler itself or when you pass it to the service's __init__ method.
-        # Be aware of this when you set the service's auth attribute by hand --
-        # you may need to point it at the service for it to function properly.
-        self.service = None
-
+        self.args = kwargs
+        self.config = config
         self.log = logging.getLogger(self.__class__.__name__)
         if loglevel is not None:
             self.log.level = loglevel
 
-    def collect_arg_objs(self):
-        arg_objs = aggregate_subclass_fields(self.__class__, 'ARGS')
-        add_default_routes(arg_objs, self.DEFAULT_ROUTES)
-        return arg_objs
-
-    def preprocess_arg_objs(self, arg_objs):
-        pass
-
     def configure(self):
         pass
 
-    def __call__(self, req):
+    def apply_to_request(self, request, service):
         pass
 
 
@@ -79,17 +63,32 @@ class HmacKeyAuth(BaseAuth):
     Basis for AWS HMAC-based authentication
     '''
     ARGS = [Arg('-I', '--access-key-id', dest='key_id', metavar='KEY_ID'),
-            Arg('-S', '--secret-key', dest='secret_key', metavar='KEY')]
+            Arg('-S', '--secret-key', dest='secret_key', metavar='KEY'),
+            Arg('--security-token', dest='security_token', metavar='TOKEN')]
+
+    @classmethod
+    def from_other(cls, other, **kwargs):
+        kwargs.setdefault('loglevel', other.log.level)
+        kwargs.setdefault('key_id', other.args.get('key_id'))
+        kwargs.setdefault('secret_key', other.args.get('secret_key'))
+        kwargs.setdefault('security_token', other.args.get('security_token'))
+        new = cls(other.config, **kwargs)
+        new.configure()
+        return new
 
     def configure(self):
         # If the current user/region was explicitly set (e.g. with --region),
         # use that first
         self.configure_from_configfile(only_if_explicit=True)
         # Try the environment next
-        if 'AWS_ACCESS_KEY' in os.environ and not self.args.get('key_id'):
-            self.args['key_id'] = os.getenv('AWS_ACCESS_KEY')
-        if 'AWS_SECRET_KEY' in os.environ and not self.args.get('secret_key'):
-            self.args['secret_key'] = os.getenv('AWS_SECRET_KEY')
+        self.args['key_id'] = (self.args.get('key_id') or
+                               os.getenv('AWS_ACCESS_KEY_ID') or
+                               os.getenv('AWS_ACCESS_KEY'))
+        self.args['secret_key'] = (self.args.get('secret_key') or
+                                   os.getenv('AWS_SECRET_ACCESS_KEY') or
+                                   os.getenv('AWS_SECRET_KEY'))
+        self.args['security_token'] = (self.args.get('security_token') or
+                                       os.getenv('AWS_SECURITY_TOKEN'))
         # See if an AWS credential file was given in the environment
         self.configure_from_aws_credential_file()
         # Try the requestbuilder config file next
@@ -111,18 +110,16 @@ class HmacKeyAuth(BaseAuth):
                     if '=' in line:
                         (key, val) = line.split('=', 1)
                         if (key.strip() == 'AWSAccessKeyId' and
-                            not self.args.get('key_id')):
+                                not self.args.get('key_id')):
                             # There's probably a better way to do this, but it
                             # seems to work for me.  Patches are welcome.  :)
                             self.args['key_id'] = val.strip()
                         elif (key.strip() == 'AWSSecretKey' and
-                            not self.args.get('secret_key')):
-                            # This space for rent
+                              not self.args.get('secret_key')):
                             self.args['secret_key'] = val.strip()
 
     def configure_from_configfile(self, only_if_explicit=False):
-        if (only_if_explicit and self.config.current_user is None and
-            self.config.current_region is None):
+        if only_if_explicit and not self.args.get('region'):  # Somewhat hacky
             # The current user/region were not explicitly set, so do nothing.
             return
         if not self.args.get('key_id'):
@@ -148,18 +145,20 @@ class S3RestAuth(HmacKeyAuth):
             'torrent', 'uploadId', 'uploads', 'versionId', 'versioning',
             'versions', 'website'))
 
-    def __call__(self, req):
+    def apply_to_request(self, req, service):
         if req.headers is None:
             req.headers = {}
         req.headers['Date'] = email.utils.formatdate()
         req.headers['Host'] = urlparse.urlparse(req.url).netloc
+        if self.args.get('security_token'):
+            req.headers['x-amz-security-token'] = self.args['security_token']
         if 'Signature' in req.headers:
             del req.headers['Signature']
         c_headers = self.get_canonicalized_headers(req)
-        self.log.debug('canonicalized_headers: %s', repr(c_headers))
-        c_resource = self.get_canonicalized_resource(req)
+        self.log.debug('canonicalized headers: %s', repr(c_headers))
+        c_resource = self.get_canonicalized_resource(req, service)
         self.log.debug('canonicalized resource: %s', repr(c_resource))
-        to_sign = '\n'.join((req.method.upper(),
+        to_sign = '\n'.join((req.method,
                              req.headers.get('Content-MD5', ''),
                              req.headers.get('Content-Type', ''),
                              req.headers.get('Date'),
@@ -170,11 +169,42 @@ class S3RestAuth(HmacKeyAuth):
         req.headers['Authorization'] = 'AWS {0}:{1}'.format(self.args['key_id'],
                                                             signature)
 
-    def get_canonicalized_resource(self, req):
+    def apply_to_request_params(self, req, service, expiration_datetime):
+        # This does not implement security tokens.
+        for param in ('AWSAccessKeyId', 'Expires', 'Signature'):
+            req.params.pop(param, None)
+
+        expiration = calendar.timegm(expiration_datetime.utctimetuple())
+        delta_t = expiration_datetime - datetime.datetime.utcnow()
+        delta_t_sec = ((delta_t.microseconds +
+                        (delta_t.seconds + delta_t.days * 24 * 3600) * 10**6)
+                       / 10**6)
+        self.log.debug('expiration: %i (%f seconds from now)',
+                       expiration, delta_t_sec)
+        c_headers = self.get_canonicalized_headers(req)
+        self.log.debug('canonicalized headers: %s', repr(c_headers))
+        c_resource = self.get_canonicalized_resource(req, service)
+        self.log.debug('canonicalized resource: %s', repr(c_resource))
+        to_sign = '\n'.join((req.method,
+                             req.headers.get('Content-MD5', ''),
+                             req.headers.get('Content-Type', ''),
+                             six.text_type(expiration),
+                             c_headers + c_resource))
+        self.log.debug('string to sign: %s', repr(to_sign))
+        signature = self.sign_string(to_sign.encode('utf-8'))
+        self.log.debug('b64-encoded signature: %s', signature)
+        req.params['AWSAccessKeyId'] = self.args['key_id']
+        req.params['Expires'] = six.text_type(expiration)
+        req.params['Signature'] = signature
+        if self.args.get('security_token'):
+            # This is a guess.  I have no evidence that this actually works.
+            req.params['SecurityToken'] = self.args['security_token']
+
+    def get_canonicalized_resource(self, req, service):
         # /bucket/keyname
         parsed_req_path = urlparse.urlparse(req.url).path
-        assert self.service.endpoint is not None
-        parsed_svc_path = urlparse.urlparse(self.service.endpoint).path
+        assert service.endpoint is not None
+        parsed_svc_path = urlparse.urlparse(service.endpoint).path
         # IMPORTANT:  this only supports path-style requests
         assert parsed_req_path.startswith(parsed_svc_path)
         resource = parsed_req_path[len(parsed_svc_path):]
@@ -197,7 +227,8 @@ class S3RestAuth(HmacKeyAuth):
                     resource += '?' + '&'.join(subresources)
         return resource
 
-    def get_canonicalized_headers(self, req):
+    @staticmethod
+    def get_canonicalized_headers(req):
         headers_dict = {}
         for key, val in req.headers.iteritems():
             if key.lower().startswith('x-amz-'):
@@ -223,13 +254,15 @@ class QuerySigV2Auth(HmacKeyAuth):
     http://docs.amazonwebservices.com/general/latest/gr/signature-version-2.html
     '''
 
-    def __call__(self, req):
+    def apply_to_request(self, req, service):
         if req.params is None:
             req.params = {}
-        req.params['AWSAccessKeyId']   = self.args['key_id']
+        req.params['AWSAccessKeyId'] = self.args['key_id']
         req.params['SignatureVersion'] = 2
-        req.params['SignatureMethod']  = 'HmacSHA256'
-        req.params['Timestamp']        = time.strftime(ISO8601, time.gmtime())
+        req.params['SignatureMethod'] = 'HmacSHA256'
+        req.params['Timestamp'] = time.strftime(ISO8601, time.gmtime())
+        if self.args.get('security_token'):
+            req.params['SecurityToken'] = self.args['security_token']
         if 'Signature' in req.params:
             # Needed for retries so old signatures aren't included in to_sign
             del req.params['Signature']
