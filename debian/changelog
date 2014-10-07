@@ -6,6 +6,7 @@ python-requestbuilder (0.2.2-1) unstable; urgency=medium
   [ Thomas Goirand ]
   * New upstream release (Closes: #764297).
   * Added extend-diff-ignore = "^[^/]*[.]egg-info/" in debian/source/options.
+  * Standards-Version is now 3.9.6.
 
  -- Thomas Goirand <zigo@debian.org>  Tue, 07 Oct 2014 10:33:06 +0800
 
