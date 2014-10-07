@@ -8,7 +8,7 @@ Uploaders: Julien Danjou <acid@debian.org>,
 Build-Depends: debhelper (>= 9),
                openstack-pkg-tools,
                python-all (>= 2.6.6-3~),
-               python-requests,
+               python-requests (>= 1),
                python-setuptools,
                python-six
 Standards-Version: 3.9.5
@@ -19,7 +19,7 @@ Homepage: https://pypi.python.org/pypi/requestbuilder
 Package: python-requestbuilder
 Architecture: all
 Pre-Depends: dpkg (>= 1.15.6~)
-Depends: python-requests, python-six, ${misc:Depends}, ${python:Depends}
+Depends: python-requests (>= 1), python-six, ${misc:Depends}, ${python:Depends}
 Recommends: ${python:Recommends}
 Description: command line-driven HTTP request builder
  Python Requestbuilder is command line-driven. It is used to build HTTP
