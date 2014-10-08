@@ -1,3 +1,9 @@
+python-requestbuilder (0.2.3-1) unstable; urgency=medium
+
+  * New upstream release (Closes: #764424).
+
+ -- Thomas Goirand <zigo@debian.org>  Wed, 08 Oct 2014 14:52:28 +0800
+
 python-requestbuilder (0.2.2-1) unstable; urgency=medium
 
   [ Thomas Bechtold ]
