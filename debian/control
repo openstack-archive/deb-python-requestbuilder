@@ -12,8 +12,8 @@ Build-Depends: debhelper (>= 9),
                python-setuptools,
                python-six
 Standards-Version: 3.9.6
-Vcs-Browser: http://anonscm.debian.org/gitweb/?p=openstack/python-requestbuilder.git
-Vcs-Git: git://anonscm.debian.org/openstack/python-requestbuilder.git
+Vcs-Browser: https://anonscm.debian.org/cgit/openstack/python-requestbuilder.git/
+Vcs-Git: https://anonscm.debian.org/git/openstack/python-requestbuilder.git
 Homepage: https://pypi.python.org/pypi/requestbuilder
 
 Package: python-requestbuilder
