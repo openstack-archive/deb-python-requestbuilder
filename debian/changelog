@@ -9,6 +9,7 @@ python-requestbuilder (0.5.2-1) unstable; urgency=medium
   * New upstream release (Closes: #832974).
   * Remove debian/install which was installing /usr/bin/httpget from ./bin.
   * Removed inactive maintainers from uploaders field.
+  * Ran wrap-and-sort -t -a.
 
  -- Thomas Goirand <zigo@debian.org>  Tue, 09 Aug 2016 11:45:43 +0200
 
