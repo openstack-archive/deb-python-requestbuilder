@@ -22,7 +22,6 @@ import io
 import logging
 import os.path
 import random
-import socket
 import time
 
 import requests.exceptions
