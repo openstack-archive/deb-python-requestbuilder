@@ -12,6 +12,7 @@ python-requestbuilder (0.5.2-1) unstable; urgency=medium
   * Ran wrap-and-sort -t -a.
   * Fixed (build-)depends version and moved some deps from build-depends to
     build-depends-indep.
+  * Fixed debian/copyright ordering.
 
  -- Thomas Goirand <zigo@debian.org>  Tue, 09 Aug 2016 11:45:43 +0200
 

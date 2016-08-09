@@ -2,15 +2,15 @@ Format: http://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: requestbuilder
 Source: https://github.com/boto/requestbuilder
 
-Files: debian/*
-Copyright: (c) 2013, Thomas Goirand <zigo@debian.org>
-License: ISC
-
 Files: *
 Copyright: (c) 2013, Garrett Holmstrom <gholms@fedoraproject.org>
            (c) 2013, Matt Spaulding <mspaulding06@gmail.com>
            (c) 2013, Andy Grimm <agrimm@gmail.com>
            (c) 2013, Vic Iglesias <viglesiasce@gmail.com>
+License: ISC
+
+Files: debian/*
+Copyright: (c) 2013-2016, Thomas Goirand <zigo@debian.org>
 License: ISC
 
 License: ISC
