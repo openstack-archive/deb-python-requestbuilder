@@ -13,6 +13,7 @@ python-requestbuilder (0.5.2-1) unstable; urgency=medium
   * Fixed (build-)depends version and moved some deps from build-depends to
     build-depends-indep.
   * Fixed debian/copyright ordering.
+  * Standards-Version: 3.9.8 (no change).
 
  -- Thomas Goirand <zigo@debian.org>  Tue, 09 Aug 2016 11:45:43 +0200
 
