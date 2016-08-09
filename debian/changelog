@@ -1,10 +1,14 @@
-python-requestbuilder (0.2.3-2) UNRELEASED; urgency=medium
+python-requestbuilder (0.5.2-1) unstable; urgency=medium
 
+  [ Ondřej Nový ]
   * Fixed VCS URLs (https).
   * d/rules: Changed UPSTREAM_GIT protocol to https
   * d/copyright: Changed source URL to https protocol
 
- -- Ondřej Nový <novy@ondrej.org>  Sun, 28 Feb 2016 15:48:57 +0100
+  [ Thomas Goirand ]
+  * New upstream release (Closes: #832974).
+
+ -- Thomas Goirand <zigo@debian.org>  Tue, 09 Aug 2016 11:45:43 +0200
 
 python-requestbuilder (0.2.3-1) unstable; urgency=medium
 
