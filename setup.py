@@ -22,7 +22,7 @@ from setuptools import find_packages, setup
 from requestbuilder import __version__
 
 
-requirements = ['requests>=1',
+requirements = ['requests>=2.4',
                 'six']
 if sys.version_info < (2, 7):
     requirements.append('argparse')
@@ -80,7 +80,7 @@ setup(name='requestbuilder',
       install_requires=requirements,
       license='ISC',
       platforms='Posix; MacOS X',
-      classifiers=['Development Status :: 3 - Alpha',
+      classifiers=['Development Status :: 4 - Beta',
                    'Intended Audience :: Developers',
                    'License :: OSI Approved :: ISC License (ISCL)',
                    'Operating System :: OS Independent',

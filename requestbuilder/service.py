@@ -1,4 +1,4 @@
-# Copyright (c) 2012-2014, Eucalyptus Systems, Inc.
+# Copyright (c) 2012-2016 Hewlett Packard Enterprise Development LP
 #
 # Permission to use, copy, modify, and/or distribute this software for
 # any purpose with or without fee is hereby granted, provided that the
@@ -14,23 +14,24 @@
 
 from __future__ import absolute_import
 
+import cgi
 import collections
 import datetime
 import functools
+import io
 import logging
 import os.path
 import random
 import socket
 import time
-import urlparse
 
 import requests.exceptions
 import six
+import six.moves.urllib_parse as urlparse
 
 from requestbuilder.exceptions import (ClientError, ServerError,
-                                       ServiceInitError)
+                                       ServiceInitError, TimeoutError)
 from requestbuilder.mixins import RegionConfigurableMixin
-from requestbuilder.util import add_default_routes, aggregate_subclass_fields
 
 
 class BaseService(RegionConfigurableMixin):
@@ -39,7 +40,6 @@ class BaseService(RegionConfigurableMixin):
     API_VERSION = ''
     MAX_RETRIES = 2
     TIMEOUT = 30  # socket timeout in seconds
-    AUTH_CLASS = None  # deprecated; use BaseRequest.AUTH_CLASS instead
 
     REGION_ENVVAR = None
     URL_ENVVAR = None
@@ -48,10 +48,10 @@ class BaseService(RegionConfigurableMixin):
 
     def __init__(self, config, loglevel=None, max_retries=None, timeout=None,
                  **kwargs):
-        self.args      = kwargs
-        self.config    = config
-        self.endpoint  = None
-        self.log       = logging.getLogger(self.__class__.__name__)
+        self.args = kwargs
+        self.config = config
+        self.endpoint = None
+        self.log = logging.getLogger(self.__class__.__name__)
         if loglevel is not None:
             self.log.level = loglevel
         self.max_retries = max_retries
@@ -92,12 +92,11 @@ class BaseService(RegionConfigurableMixin):
             else:
                 self.timeout = self.TIMEOUT
 
-        # SSL cert verification is opt-in
-        self.session_args['verify'] = self.config.convert_to_bool(
-            self.config.get_region_option('verify-ssl'), default=False)
+        self.session_args.setdefault('stream', True)
 
-        # requests only applies proxy config in code paths we don't use
-        self.session_args['proxies'] = _get_proxies()
+        # SSL cert verification is opt-in
+        self.session_args.setdefault('verify', self.config.convert_to_bool(
+            self.config.get_region_option('verify-ssl'), default=False))
 
         # Ensure everything is okay and finish up
         self.validate_config()
@@ -108,6 +107,9 @@ class BaseService(RegionConfigurableMixin):
             self._session = requests.session()
             for key, val in self.session_args.iteritems():
                 setattr(self._session, key, val)
+            for adapter in self._session.adapters.values():
+                # send_request handles retries to allow for re-signing
+                adapter.max_retries = 0
         return self._session
 
     def validate_config(self):
@@ -128,19 +130,21 @@ class BaseService(RegionConfigurableMixin):
                 msg = 'No endpoint to connect to was given'
             raise ServiceInitError(msg)
 
+    def get_request_url(self, method='GET', path=None, params=None,
+                        headers=None, data=None, files=None, auth=None):
+        url = self.__get_url_for_path(path)
+
+        headers = dict(headers or {})
+        if 'host' not in [header.lower() for header in headers]:
+            headers['Host'] = urlparse.urlparse(self.endpoint).netloc
+
+        p_request = self.__log_and_prepare_request(method, url, params, data,
+                                                   files, headers, auth)
+        return p_request.url
+
     def send_request(self, method='GET', path=None, params=None, headers=None,
                      data=None, files=None, auth=None):
-        # TODO:  test url-encoding
-        if path:
-            # We can't simply use urljoin because a path might start with '/'
-            # like it could for S3 keys that start with that character.
-            if self.endpoint.endswith('/'):
-                url = self.endpoint + path
-            else:
-                url = self.endpoint + '/' + path
-        else:
-            url = self.endpoint
-
+        url = self.__get_url_for_path(path)
         headers = dict(headers)
         if 'host' not in [header.lower() for header in headers]:
             headers['Host'] = urlparse.urlparse(self.endpoint).netloc
@@ -156,7 +160,7 @@ class BaseService(RegionConfigurableMixin):
                 data_file_offset = None
             while True:
                 for attempt_no, delay in enumerate(
-                    _generate_delays(max_tries), 1):
+                        _generate_delays(max_tries), 1):
                     # Use exponential backoff if this is a retry
                     if delay > 0:
                         self.log.debug('will retry after %.3f seconds', delay)
@@ -164,8 +168,31 @@ class BaseService(RegionConfigurableMixin):
 
                     self.log.info('sending request (attempt %i of %i)',
                                   attempt_no, max_tries)
-                    response = self.__log_and_send_request(
+                    p_request = self.__log_and_prepare_request(
                         method, url, params, data, files, headers, auth)
+                    p_request.start_time = datetime.datetime.now()
+                    proxies = requests.utils.get_environ_proxies(url)
+                    for key, val in sorted(proxies.items()):
+                        self.log.debug('request proxy:  %s=%s', key, val)
+                    try:
+                        response = self.session.send(
+                            p_request, timeout=self.timeout, proxies=proxies,
+                            allow_redirects=False)
+                    except requests.exceptions.Timeout:
+                        if attempt_no < max_tries:
+                            self.log.debug('timeout', exc_info=True)
+                            if data_file_offset is not None:
+                                self.log.debug('re-seeking body to '
+                                               'beginning of file')
+                                # pylint: disable=E1101
+                                data.seek(data_file_offset)
+                                # pylint: enable=E1101
+                                continue
+                            elif not hasattr(data, 'tell'):
+                                continue
+                            # Fallthrough -- if it has a file pointer but not
+                            # seek we can't retry because we can't rewind.
+                        raise
                     if response.status_code not in (500, 503):
                         break
                     # If it *was* in that list, retry
@@ -175,7 +202,8 @@ class BaseService(RegionConfigurableMixin):
                     # because we have to re-sign requests when their URLs
                     # change.
                     redirects_left -= 1
-                    parsed_rdr = urlparse.urlparse(response.headers['Location'])
+                    parsed_rdr = urlparse.urlparse(
+                        response.headers['Location'])
                     parsed_url = urlparse.urlparse(url)
                     new_url_bits = []
                     for rdr_bit, url_bit in zip(parsed_rdr, parsed_url):
@@ -197,38 +225,58 @@ class BaseService(RegionConfigurableMixin):
                     # redirect another way for some reason.
                     self.handle_http_error(response)
                 return response
+        except requests.exceptions.Timeout as exc:
+            self.log.debug('timeout', exc_info=True)
+            raise TimeoutError('request timed out', exc)
         except requests.exceptions.ConnectionError as exc:
             self.log.debug('connection error', exc_info=True)
-            if len(exc.args) > 0 and hasattr(exc.args[0], 'reason'):
-                raise ClientError(exc.args[0].reason)
-            else:
-                raise ClientError('connection error')
+            return self.__handle_connection_error(exc)
         except requests.exceptions.HTTPError as exc:
             return self.handle_http_error(response)
         except requests.exceptions.RequestException as exc:
             self.log.debug('request error', exc_info=True)
             raise ClientError(exc)
 
+    def __handle_connection_error(self, err):
+        if isinstance(err, six.string_types):
+            msg = err
+        elif isinstance(err, Exception) and len(err.args) > 0:
+            if hasattr(err.args[0], 'reason'):
+                msg = err.args[0].reason
+            elif isinstance(err.args[0], Exception):
+                return self.__handle_connection_error(err.args[0])
+            else:
+                msg = err.args[0]
+        else:
+            raise ClientError('connection error')
+        raise ClientError('connection error ({0})'.format(msg))
+
     def handle_http_error(self, response):
         self.log.debug('HTTP error', exc_info=True)
         raise ServerError(response)
 
-    def __log_and_send_request(self, method, url, params, data, files, headers,
-                               auth):
-        # Requests 1 gives auth handlers PreparedRequests instead of the
-        # original Requests like version 0 does.  Since most of our auth
-        # handlers inspect and/or modify things that aren't headers, we
-        # manually apply auth to it in this method to make things less painful.
-        #
-        # The pre_send hook only works on requests 0.  We replicate that for
-        # requests 1 just below.
+    def __get_url_for_path(self, path):
+        if path:
+            # We can't simply use urljoin because a path might start with '/'
+            # like it could for S3 keys that start with that character.
+            if self.endpoint.endswith('/'):
+                return self.endpoint + path
+            else:
+                return self.endpoint + '/' + path
+        else:
+            return self.endpoint
+
+    def __log_and_prepare_request(self, method, url, params, data, files,
+                                  headers, auth):
         hooks = {'response': functools.partial(_log_response_data, self.log)}
+        if auth:
+            bound_auth = auth.bind_to_service(self)
+        else:
+            bound_auth = None
         request = requests.Request(method=method, url=url, params=params,
-                                   data=data, files=files, headers=headers)
-        if auth is not None:
-            auth.apply_to_request(request, self)
-        # A prepared request gives us extra info we want to log
-        p_request = request.prepare()
+                                   data=data, files=files, headers=headers,
+                                   auth=bound_auth)
+        p_request = self.session.prepare_request(request)
         p_request.hooks = {'response': hooks['response']}
         self.log.debug('request method: %s', request.method)
         self.log.debug('request url:    %s', p_request.url)
@@ -238,12 +286,30 @@ class BaseService(RegionConfigurableMixin):
                     val = '<redacted>'
                 self.log.debug('request header: %s: %s', key, val)
         if isinstance(request.params, (dict, collections.Mapping)):
-            for key, val in sorted(request.params.iteritems()):
+            for key, val in sorted(urlparse.parse_qsl(
+                    urlparse.urlparse(p_request.url).query,
+                    keep_blank_values=True)):
                 if key.lower().endswith('password'):
                     val = '<redacted>'
                 self.log.debug('request param:  %s: %s', key, val)
         if isinstance(request.data, (dict, collections.Mapping)):
-            for key, val in sorted(request.data.iteritems()):
+            content_type, content_type_params = cgi.parse_header(
+                p_request.headers.get('content-type') or '')
+            if content_type == 'multipart/form-data':
+                data = cgi.parse_multipart(io.BytesIO(p_request.body),
+                                           content_type_params)
+            elif content_type == 'application/x-www-form-urlencoded':
+                data = dict(urlparse.parse_qsl(p_request.body,
+                                               keep_blank_values=True))
+            else:
+                data = request.data
+            for key, val in sorted(data.items()):
+                # pylint: disable=superfluous-parens
+                if key in (request.files or {}):
+                    # We probably don't want to include the contents of
+                    # entire files in debug output.
+                    continue
+                # pylint: enable=superfluous-parens
                 if key.lower().endswith('password'):
                     val = '<redacted>'
                 self.log.debug('request data:   %s: %s', key, val)
@@ -252,8 +318,7 @@ class BaseService(RegionConfigurableMixin):
                 if hasattr(val, '__len__'):
                     val = '<{0} bytes>'.format(len(val))
                 self.log.debug('request file:   %s: %s', key, val)
-        p_request.start_time = datetime.datetime.now()
-        return self.session.send(p_request, stream=True, timeout=self.timeout)
+        return p_request
 
     def __configure_endpoint(self):
         # self.args gets highest precedence
@@ -312,14 +377,3 @@ def _parse_endpoint_url(urlish):
         region = None
         url = urlish
     return url, region
-
-
-def _get_proxies():
-    try:
-        bypass = six.moves.urllib.request.proxy_bypass()
-    except (TypeError, socket.gaierror):
-        # This blows up on my old OS X machine
-        bypass = False
-    if bypass:
-        return {}
-    return six.moves.urllib.request.getproxies()

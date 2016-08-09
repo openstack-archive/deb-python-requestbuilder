@@ -1,4 +1,4 @@
-# Copyright (c) 2012-2014, Eucalyptus Systems, Inc.
+# Copyright (c) 2012-2016 Hewlett Packard Enterprise Development LP
 #
 # Permission to use, copy, modify, and/or distribute this software for
 # any purpose with or without fee is hereby granted, provided that the
@@ -23,8 +23,30 @@ class ConfigView(object):
     def __init__(self, data, region=None, user=None):
         self.log = data.log
         self.__data = data
-        self.region = region
-        self.user = user
+        self.__region = None
+        self.__user = None
+        if region:
+            self.region = region
+        if user:
+            self.user = user
+
+    @property
+    def region(self):
+        return self.__region
+
+    @region.setter
+    def region(self, value):
+        self.__region = value
+        self.log.info('set region to %s', value)
+
+    @property
+    def user(self):
+        return self.__user
+
+    @user.setter
+    def user(self, value):
+        self.__user = value
+        self.log.info('set user to %s', value)
 
     def clone(self, region=None, user=None):
         region = region or self.region
@@ -101,25 +123,25 @@ class ConfigData(object):
             elif section.startswith('region '):
                 region = section.split()[1]
                 if any(chunk == '' for chunk in region.split(':')):
-                    raise ValueError(('configuration file region {0} must not '
-                                      'contain an empty namespace').format(
-                                     repr(region)))
+                    raise ValueError(
+                        'configuration file region {0} must not contain '
+                        'an empty namespace'.format(repr(region)))
                 if '@' in region:
-                    raise ValueError(('configuration file region {0} must not '
-                                      'contain @ characters').format(
-                                     repr(region)))
+                    raise ValueError(
+                        'configuration file region {0} must not contain '
+                        '@ characters'.format(repr(region)))
                 self.regions[region] = dict(parser.items(section))
                 self.regions[region].setdefault('name', region.rsplit(':')[-1])
             elif section.startswith('user '):
                 user = section.split()[1]
                 if any(chunk == '' for chunk in user.split(':')):
-                    raise ValueError(('configuration file user {0} must not '
-                                      'contain an empty namespace').format(
-                                     repr(user)))
+                    raise ValueError(
+                        'configuration file user {0} must not contain '
+                        'an empty namespace'.format(repr(user)))
                 if '@' in user:
-                    raise ValueError(('configuration file user {0} must not '
-                                      'contain @ characters').format(
-                                     repr(user)))
+                    raise ValueError(
+                        'configuration file user {0} must not contain '
+                        '@ characters'.format(repr(user)))
                 self.users[user] = dict(parser.items(section))
             # Ignore unrecognized sections for forward compatibility
 
@@ -131,7 +153,9 @@ class ConfigData(object):
             self.log.info('finding global option %s', option)
             value = self.globals.get(option)
             self._memo[id(self.globals)][option] = value
-            if value:
+            if value and redact:
+                self.log.info('  found   %s = <redacted>', option)
+            elif value:
                 self.log.info('  found   %s = %s', option, value)
             else:
                 self.log.info('  novalue for %s', option)
@@ -144,7 +168,8 @@ class ConfigData(object):
             return self._memo[id(confdict)][(section, option)]
         else:
             if confdict_log_name is not None:
-                self.log.info('finding %s option %s', confdict_log_name,option)
+                self.log.info('finding %s option %s', confdict_log_name,
+                              option)
             values = self.__lookup(confdict, section, option, redact=redact,
                                    seen=seen)
             self._memo[id(confdict)][(section, option)] = values

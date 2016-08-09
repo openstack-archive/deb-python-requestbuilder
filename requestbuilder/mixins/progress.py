@@ -1,4 +1,4 @@
-# Copyright (c) 2012-2014, Eucalyptus Systems, Inc.
+# Copyright (c) 2012-2015, Eucalyptus Systems, Inc.
 #
 # Permission to use, copy, modify, and/or distribute this software for
 # any purpose with or without fee is hereby granted, provided that the
@@ -14,9 +14,9 @@
 
 import argparse
 import math
-import os
 import signal
 import sys
+import time
 
 try:
     import progressbar
@@ -24,97 +24,6 @@ except ImportError:
     pass
 
 from requestbuilder import Arg, MutuallyExclusiveArgList
-
-
-class RegionConfigurableMixin(object):
-    """
-    A mixin that allows the user to specify which user/region names to use
-    for the configuration via a --region arg and, if a 'REGION_ENVVAR' class
-    variable is set, an environment variable as well.  The included
-    update_config_view method actually reads these data and updates
-    self.config to point to them.
-    """
-
-    ARGS = [Arg('--region', metavar='USER@REGION', route_to=None,
-                help=('region and/or user names to search when looking up '
-                      'config file data'))]
-
-    def update_config_view(self, region=None, user=None):
-        # Different sources of user/region info can override only parts of
-        # the set, so we only overwite things conditionally.
-
-        # self.args gets highest precedence
-        if self.args.get('region'):
-            _user, _region = self.__parse_region(self.args['region'])
-            user = user or _user
-            region = region or _region
-        # Environment comes next
-        if (getattr(self, 'REGION_ENVVAR', None) and
-                os.getenv(self.REGION_ENVVAR)):
-            _user, _region = self.__parse_region(os.getenv(self.REGION_ENVVAR))
-            user = user or _user
-            region = region or _region
-        # Default region from the config file
-        if not region:
-            region = self.config.get_global_option('default-region')
-        # User info can come from a region, so set that in the config now.
-        if region:
-            self.config.region = region
-        # Look up the region's user if needed...
-        if not user:
-            user = self.config.get_region_option('user')
-        # ...and finally update the config with that as well.
-        if user:
-            self.config.user = user
-
-    @staticmethod
-    def __parse_region(regionish):
-        """
-        Given a string with pattern "[USER@][REGION]", return the user
-        and region names that that string represents, if any, and None
-        for the values it does not represent.
-
-        Examples:
-         - ""          -> (None, None)
-         - "spam"      -> (None, "spam")
-         - "eggs@"     -> ("eggs", None)
-         - "eggs@spam" -> ("eggs", "spam")
-        """
-
-        if not regionish:
-            return None, None
-        if regionish.endswith('@'):
-            return regionish.rstrip('@'), None
-        elif '@' in regionish:
-            return regionish.split('@', 1)
-        else:
-            return None, regionish
-
-
-class TabifyingMixin(object):
-    '''
-    A command mixin that provides the tabify() function along with its
-    associated --show-empty-fields command line arg.
-    '''
-
-    ARGS = [Arg('--show-empty-fields', action='store_true', route_to=None,
-                help='show empty values as "(nil)"')]
-
-    def tabify(self, fields, include=None):
-        '''
-        Join a list of strings with tabs.  Nonzero items that Python considers
-        false are printed as-is if they appear in the include list, replaced
-        with '(nil)' if the user specifies --show-empty-fields at the command
-        line, and omitted otherwise.
-        '''
-        def allowable(item):
-            return bool(item) or item is 0 or item in (include or [])
-
-        if self.args['show_empty_fields']:
-            fstr = '(nil)'
-        else:
-            fstr = ''
-        return '\t'.join([str(f) if allowable(f) else fstr for f in fields])
 
 
 if 'progressbar' in sys.modules:
@@ -125,7 +34,9 @@ if 'progressbar' in sys.modules:
                 help='show progress (the default when run interactively)'),
             Arg('--no-progress', dest='show_progress', action='store_false',
                 default=sys.stdout.isatty(), route_to=None, help='''do not
-                show progress (the default when run non-interactively)'''))]
+                show progress (the default when run non-interactively)'''),
+            Arg('--porcelain', dest='show_porcelain', action='store_true',
+                route_to=None, help=argparse.SUPPRESS))]
 else:
     # Keep them around so scripts don't break, but make them non-functional
     #
@@ -135,7 +46,9 @@ else:
         Arg('--progress', dest='show_progress', action='store_false',
             default=False, route_to=None, help=argparse.SUPPRESS),
         Arg('--no-progress', dest='show_progress', action='store_false',
-            default=False, route_to=None, help=argparse.SUPPRESS)]
+            default=False, route_to=None, help=argparse.SUPPRESS),
+        Arg('--porcelain', dest='show_porcelain', action='store_true',
+            route_to=None, help=argparse.SUPPRESS)]
 
 
 class FileTransferProgressBarMixin(object):
@@ -150,8 +63,10 @@ class FileTransferProgressBarMixin(object):
     ARGS = _PROGRESS_BAR_COMMAND_ARGS
 
     def get_progressbar(self, label=None, maxval=None):
-        if 'progressbar' in sys.modules and self.args.get('show_progress',
-                                                          False):
+        if self.args.get('show_porcelain'):
+            return _MachineReadableCounter(label=label, maxval=maxval)
+        elif 'progressbar' in sys.modules and self.args.get('show_progress',
+                                                            False):
             widgets = []
             if label is not None:
                 widgets += [label, ' ']
@@ -209,7 +124,6 @@ if 'progressbar' in sys.modules:
             self.maxval = self.currval
             progressbar.ProgressBar.finish(self)
 
-
     class _IndeterminateBouncingBar(progressbar.BouncingBar):
         '''
         A BouncingBar that moves exactly one space each time it updates,
@@ -228,7 +142,6 @@ if 'progressbar' in sys.modules:
             self.__update_count += 1
             return retval
 
-
     class _FileSize(progressbar.Widget):
         PREFIXES = ' kMGTPEZY'
 
@@ -240,3 +153,42 @@ if 'progressbar' in sys.modules:
                 power = int(math.log(pbar.currval, 1024))
                 scaledval = pbar.currval / 1024.0 ** power
             return '{0:6.2f} {1}B'.format(scaledval, self.PREFIXES[power])
+
+
+class _MachineReadableCounter(object):
+    def __init__(self, maxval=None, label=None):
+        self.maxval = maxval
+        self.currval = 0
+        self._last_displayed_val = None
+        self._last_updated = 0
+        self._finished = False
+        if label:
+            self.__template = '{0} '.format(label)
+        else:
+            self.__template = ''
+        if self.maxval:
+            self.__template = '{0}{{0}}/{1}\n'.format(self.__template,
+                                                      int(self.maxval))
+        else:
+            self.__template = '{0}{{0}}\n'.format(self.__template)
+
+    def start(self):
+        self._display()
+
+    def update(self, val):
+        self.currval = val
+        delta = time.time() - self._last_updated
+        if (delta > 0.1 and self.currval != self._last_displayed_val and
+                not self._finished):
+            self._display()
+            self._last_updated = time.time()
+
+    def finish(self):
+        if self.maxval:
+            self.currval = self.maxval
+        self._display()
+        self._finished = True
+
+    def _display(self):
+        sys.stderr.write(self.__template.format(int(self.currval)))
+        self._last_displayed_val = self.currval
