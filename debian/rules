@@ -4,7 +4,10 @@ UPSTREAM_GIT := https://github.com/boto/requestbuilder.git
 include /usr/share/openstack-pkg-tools/pkgos.make
 
 %:
-	dh $@  --with python2
+	dh $@  --with python2,python3
+
+override_dh_auto_install:
+	pkgos-dh_auto_install
 
 # Commands not to run
 override_dh_installcatalogs:

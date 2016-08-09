@@ -1,0 +1,197 @@
+Description: Add Python 3 compatibility
+Author: Thomas Goirand <zigo@debian.org>
+Forwarded: no
+Last-Update: 2016-08-09
+
+--- python-requestbuilder-0.5.2.orig/requestbuilder/auth/aws.py
++++ python-requestbuilder-0.5.2/requestbuilder/auth/aws.py
+@@ -269,7 +269,7 @@ class HmacV1Auth(HmacKeyAuth):
+                     if val is None:
+                         subresources.append(key)
+                     else:
+-                        print '{0}={1}'.format(key, val), key + '=' + val
++                        print('{0}={1}'.format(key, val), key + '=' + val)
+                         subresources.append(key + '=' + val)
+                 if subresources:
+                     resource += '?' + '&'.join(subresources)
+--- python-requestbuilder-0.5.2.orig/requestbuilder/command.py
++++ python-requestbuilder-0.5.2/requestbuilder/command.py
+@@ -12,7 +12,7 @@
+ # ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
+ # OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ 
+-from __future__ import absolute_import
++from __future__ import absolute_import, print_function
+ 
+ import argparse
+ import bdb
+@@ -36,6 +36,9 @@ from requestbuilder.suite import Request
+ from requestbuilder.util import add_default_routes, aggregate_subclass_fields
+ 
+ 
++import six
++
++
+ class BaseCommand(object):
+     '''
+     The basis for a command line tool.  To invoke this as a command line tool,
+@@ -250,7 +253,7 @@ class BaseCommand(object):
+         self.log.debug('parsed arguments: ' + str(cli_args))
+ 
+     def distribute_args(self):
+-        for key, val in self.args.iteritems():
++        for key, val in six.iteritems(self.args):
+             # If a location to route this to was supplied, put it there, too.
+             if key not in self._arg_routes:
+                 raise TypeError('got unrecognized arg: "{0}"'.format(key))
+@@ -286,12 +289,12 @@ class BaseCommand(object):
+                 if getattr(err, 'filename', None):
+                     err_bits[-1] += ':'
+                     err_bits.append(err.filename)
+-                print >> sys.stderr, ' '.join(err_bits)
++                print(' '.join(err_bits), file=sys.stderr)
+             else:
+                 if len(err.args) > 0 and err.args[0]:
+-                    print >> sys.stderr, msg_prefix, err.args[0]
++                    print(msg_prefix, err.args[0], file=sys.stderr)
+                 else:
+-                    print >> sys.stderr, msg_prefix, str(err)
++                    print(msg_prefix, str(err), file=sys.stderr)
+             # Since we don't even have a config file to consult our options for
+             # determining when debugging is on are limited to what we got at
+             # the command line.
+@@ -347,12 +350,12 @@ class BaseCommand(object):
+             if getattr(err, 'filename', None):
+                 err_bits[-1] += ':'
+                 err_bits.append(err.filename)
+-            print >> sys.stderr, ' '.join(err_bits)
++            print(' '.join(err_bits), file=sys.stderr)
+         else:
+             if len(err.args) > 0 and err.args[0]:
+-                print >> sys.stderr, msg_prefix, err.args[0]
++                print(msg_prefix, err.args[0], file=sys.stderr)
+             else:
+-                print >> sys.stderr, msg_prefix, str(err)
++                print(msg_prefix, str(err), file=sys.stderr)
+         if self.debug:
+             raise
+         sys.exit(1)
+@@ -394,4 +397,4 @@ def _debugger_usr1_handler(_, frame):
+     frame_dict = {'_frame': frame}
+     frame_dict.update(frame.f_globals)
+     frame_dict.update(frame.f_locals)
+-    print >> sys.stderr, ''.join(traceback.format_stack(frame))
++    print(''.join(traceback.format_stack(frame)), file=sys.stderr)
+--- python-requestbuilder-0.5.2.orig/requestbuilder/config.py
++++ python-requestbuilder-0.5.2/requestbuilder/config.py
+@@ -14,11 +14,14 @@
+ 
+ from __future__ import absolute_import
+ 
+-import ConfigParser
+ import itertools
+ import logging
+ 
+ 
++import six
++from six.moves import configparser
++
++
+ class ConfigView(object):
+     def __init__(self, data, region=None, user=None):
+         self.log = data.log
+@@ -87,7 +90,7 @@ class ConfigView(object):
+     @staticmethod
+     def __get_all_options(confdict, option):
+         matches = {}
+-        for section, options in confdict.iteritems():
++        for section, options in six.iteritems(confdict):
+             if '*' not in section and option in options:
+                 matches[section] = options[option]
+         return matches
+@@ -115,7 +118,7 @@ class ConfigData(object):
+         self._parse_config(filenames)
+ 
+     def _parse_config(self, filenames):
+-        parser = ConfigParser.SafeConfigParser()
++        parser = configparser.SafeConfigParser()
+         parser.read(filenames)
+         for section in parser.sections():
+             if section == 'global':
+--- python-requestbuilder-0.5.2.orig/requestbuilder/request.py
++++ python-requestbuilder-0.5.2/requestbuilder/request.py
+@@ -12,7 +12,7 @@
+ # ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
+ # OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ 
+-from __future__ import absolute_import
++from __future__ import absolute_import, print_function
+ 
+ import argparse
+ import copy
+@@ -31,6 +31,9 @@ from requestbuilder.util import aggregat
+ from requestbuilder.xmlparse import parse_listdelimited_aws_xml
+ 
+ 
++import six
++
++
+ class BaseRequest(BaseCommand):
+     '''
+     The basis for a command line tool that represents a request.  The data for
+@@ -218,7 +221,7 @@ class BaseRequest(BaseCommand):
+         if isinstance(err, ServerError):
+             msg = '{0}: {1}'.format(os.path.basename(sys.argv[0]),
+                                     err.format_for_cli())
+-            print >> sys.stderr, msg
++            print(msg, file=sys.stderr)
+             if self.debug:
+                 raise
+             sys.exit(1)
+@@ -325,7 +328,7 @@ class AWSQueryRequest(BaseRequest):
+         if args is None:
+             pass
+         elif isinstance(args, dict):
+-            for (key, val) in args.iteritems():
++            for (key, val) in six.iteritems(args):
+                 # Prefix.Key1, Prefix.Key2, ...
+                 if prefix:
+                     prefixed_key = '{0}.{1}'.format(prefix, key)
+@@ -436,7 +439,7 @@ def _process_filters(cli_filters):
+         filter_args[key].append(val)
+     # Build the flattenable [{'Name': key, 'Value': [value, ...]}, ...]
+     filters = [{'Name': name, 'Value': values} for (name, values)
+-               in filter_args.iteritems()]
++               in six.iteritems(filter_args)]
+     return filters
+ 
+ 
+--- python-requestbuilder-0.5.2.orig/requestbuilder/service.py
++++ python-requestbuilder-0.5.2/requestbuilder/service.py
+@@ -104,7 +104,7 @@ class BaseService(RegionConfigurableMixi
+     def session(self):
+         if self._session is None:
+             self._session = requests.session()
+-            for key, val in self.session_args.iteritems():
++            for key, val in six.iteritems(self.session_args):
+                 setattr(self._session, key, val)
+             for adapter in self._session.adapters.values():
+                 # send_request handles retries to allow for re-signing
+@@ -280,7 +280,7 @@ class BaseService(RegionConfigurableMixi
+         self.log.debug('request method: %s', request.method)
+         self.log.debug('request url:    %s', p_request.url)
+         if isinstance(p_request.headers, (dict, collections.Mapping)):
+-            for key, val in sorted(p_request.headers.iteritems()):
++            for key, val in sorted(six.iteritems(p_request.headers)):
+                 if key.lower().endswith('password'):
+                     val = '<redacted>'
+                 self.log.debug('request header: %s: %s', key, val)
+@@ -313,7 +313,7 @@ class BaseService(RegionConfigurableMixi
+                     val = '<redacted>'
+                 self.log.debug('request data:   %s: %s', key, val)
+         if isinstance(request.files, (dict, collections.Mapping)):
+-            for key, val in sorted(request.files.iteritems()):
++            for key, val in sorted(six.iteritems(request.files)):
+                 if hasattr(val, '__len__'):
+                     val = '<{0} bytes>'.format(len(val))
+                 self.log.debug('request file:   %s: %s', key, val)
