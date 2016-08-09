@@ -14,6 +14,7 @@ python-requestbuilder (0.5.2-1) unstable; urgency=medium
     build-depends-indep.
   * Fixed debian/copyright ordering.
   * Standards-Version: 3.9.8 (no change).
+  * debian/rules: list dh commands we don't run, to build faster.
 
  -- Thomas Goirand <zigo@debian.org>  Tue, 09 Aug 2016 11:45:43 +0200
 
