@@ -15,8 +15,8 @@ Build-Depends-Indep: python-requests (>= 2.4),
                      python3-requests (>= 2.4),
                      python3-six,
 Standards-Version: 3.9.8
-Vcs-Browser: https://anonscm.debian.org/cgit/openstack/python-requestbuilder.git/
-Vcs-Git: https://anonscm.debian.org/git/openstack/python-requestbuilder.git
+Vcs-Browser: https://git.openstack.org/cgit/openstack/deb-python-requestbuilder?h=debian%2Fnewton
+Vcs-Git: https://git.openstack.org/openstack/deb-python-requestbuilder -b debian/newton
 Homepage: https://pypi.python.org/pypi/requestbuilder
 
 Package: python-requestbuilder
