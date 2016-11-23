@@ -2,6 +2,7 @@ python-requestbuilder (0.5.2-3) UNRELEASED; urgency=medium
 
   * d/s/options: extend-diff-ignore of .gitreview
   * d/control: Using OpenStack's Gerrit as VCS URLs.
+  * Bumped debhelper compat version to 10
 
  -- Ondřej Nový <onovy@debian.org>  Mon, 26 Sep 2016 19:14:37 +0200
 
